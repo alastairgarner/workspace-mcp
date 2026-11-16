@@ -46,6 +46,9 @@ Everything private lives in `.local/config/` (Git-ignored), mounted read-only at
 
 Google Cloud console → **APIs & Services → Credentials** → your Desktop OAuth client → **Download JSON**. Then:
 
+If there's no download (Google only shows secrets at creation now), click **Add secret** on the client and write the file by hand: `{ "installed": { "client_id": "…", "client_secret": "…" } }`.
+
+
 ```sh
 mkdir -p .local/config && chmod 700 .local/config
 mv ~/Downloads/client_secret_*.json .local/config/client.json
@@ -63,7 +66,7 @@ pnpm auth:google --account personal
 pnpm auth:google --account work
 ```
 
-Each run opens Google's consent page (or prints the URL). Pick the right account and **tick every permission**. The script fails if Google returns no refresh token or a permission was unticked. It reads the account's email and upserts it into `.local/config/accounts.json`. It never prints tokens. Re-run it for an account whose access has expired or been revoked.
+Each run prints a Google sign-in URL (and opens it if there's a local browser). The browser can be on another machine: when Google redirects to `http://127.0.0.1:…` and the page fails to load, copy that address and paste it at the script's prompt. Google warns the app is unverified; click **Advanced → Go to … (unsafe)**, which is fine for your own client. Pick the right account and **tick every permission**. The script fails if Google returns no refresh token or a permission was unticked. It reads the account's email and upserts it into `.local/config/accounts.json`. It never prints tokens. Re-run it for an account whose access has expired or been revoked.
 
 ### 3. Create and hash the client token
 

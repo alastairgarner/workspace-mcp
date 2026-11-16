@@ -3,13 +3,14 @@
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { createServer } from 'node:http';
+import { createInterface } from 'node:readline';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
 import { gmail } from '@googleapis/gmail';
 import { accountNameSchema, loadAccountsOrEmpty, loadClient, upsertAccount, writeJsonAtomic } from './config.js';
 import { errorMessage } from './errors.js';
 import { createOAuthClient } from './gmail/client.js';
-import { authUrl, missingScopes, pkce } from './oauth.js';
+import { authUrl, missingScopes, parseCallback, pkce } from './oauth.js';
 
 const TIMEOUT_MS = 5 * 60_000;
 
@@ -22,7 +23,9 @@ function openBrowser(url: string) {
   } catch { /* best-effort */ }
 }
 
-async function listenForCode(state: string) {
+// Two ways back: the browser hits the loopback listener (same machine), or the user pastes the
+// failed redirect URL at the prompt (browser on another machine). Both are checked by parseCallback.
+async function waitForCode(state: string) {
   let resolveCode!: (code: string) => void;
   let rejectCode!: (error: Error) => void;
   const code = new Promise<string>((resolve, reject) => { resolveCode = resolve; rejectCode = reject; });
@@ -32,31 +35,35 @@ async function listenForCode(state: string) {
     const reply = (status: number, message: string) => res
       .writeHead(status, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
       .end(`<!doctype html><meta charset="utf-8"><title>workspace-mcp</title><p>${message}</p>`);
-    const params = url.searchParams;
-    if (params.get('state') !== state) {
-      reply(400, 'State mismatch. Close this tab and run the command again.');
-      rejectCode(new Error('OAuth state mismatch: stale or forged redirect. Run the command again.'));
-      return;
+    try {
+      const value = parseCallback(url.toString(), state);
+      reply(200, 'Signed in. You can close this tab and return to the terminal.');
+      resolveCode(value);
+    } catch (error) {
+      reply(400, 'Sign-in failed. Check the terminal, then close this tab.');
+      rejectCode(error instanceof Error ? error : new Error(String(error)));
     }
-    const error = params.get('error');
-    if (error) {
-      reply(400, 'Google sign-in was cancelled or failed. You can close this tab.');
-      rejectCode(new Error(`Google sign-in failed: ${error.replace(/[^\w.-]/g, '').slice(0, 100)}`));
-      return;
-    }
-    const value = params.get('code');
-    if (!value) { reply(400, 'No authorisation code received.'); rejectCode(new Error('No authorisation code in redirect')); return; }
-    reply(200, 'Signed in. You can close this tab and return to the terminal.');
-    resolveCode(value);
   });
   await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
   const address = server.address();
   if (!address || typeof address === 'string') throw new Error('Expected TCP listener');
+  let prompt: ReturnType<typeof createInterface> | undefined;
+  const startPrompt = () => {
+    if (!process.stdin.isTTY) return;
+    prompt = createInterface({ input: process.stdin, output: process.stderr, terminal: true, historySize: 0 });
+    const ask = () => prompt?.question('Or paste the http://127.0.0.1:… URL from the browser here: ', answer => {
+      if (!answer.trim()) { ask(); return; }
+      try { resolveCode(parseCallback(answer, state)); }
+      catch (error) { console.error(error instanceof Error ? error.message : String(error)); ask(); }
+    });
+    ask();
+  };
   const timer = setTimeout(() => rejectCode(new Error('Timed out after 5 minutes waiting for Google sign-in')), TIMEOUT_MS);
   return {
     redirectUri: `http://127.0.0.1:${address.port}`,
     code,
-    close: () => { clearTimeout(timer); server.close(); server.closeAllConnections(); },
+    startPrompt,
+    close: () => { clearTimeout(timer); prompt?.close(); server.close(); server.closeAllConnections(); },
   };
 }
 
@@ -72,13 +79,15 @@ async function main() {
 
   const state = randomBytes(24).toString('base64url');
   const { verifier, challenge } = pkce();
-  const callback = await listenForCode(state);
+  const callback = await waitForCode(state);
   let refreshToken: string;
   let email: string;
   try {
     const url = authUrl({ clientId: client.clientId, redirectUri: callback.redirectUri, state, challenge });
-    console.error(`Sign in to the Google account for "${name.data}" in your browser. If it doesn't open, visit:\n\n${url}\n`);
+    console.error(`Sign in to the Google account for "${name.data}". Open this URL in a browser on any machine:\n\n${url}\n\n`
+      + 'On this machine the browser returns here automatically. Elsewhere, the final page fails to load: copy its address and paste it below.\n');
     openBrowser(url);
+    callback.startPrompt();
     const code = await callback.code;
     const oauth = createOAuthClient(client, callback.redirectUri);
     const { tokens } = await oauth.getToken({ code, codeVerifier: verifier, redirect_uri: callback.redirectUri });
@@ -91,6 +100,7 @@ async function main() {
     if (!profile.data.emailAddress) throw new Error('Could not read the account email address');
     email = profile.data.emailAddress;
   } finally { callback.close(); }
+  console.error('Signed in; saving account.');
 
   // Re-read just before writing, so a concurrent login for another account isn't lost.
   const updated = upsertAccount(await loadAccountsOrEmpty(accountsFile), { name: name.data, email, refreshToken });

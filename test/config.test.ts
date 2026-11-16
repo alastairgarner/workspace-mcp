@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { loadAccounts, loadAccountsOrEmpty, loadClient, parseAccounts, upsertAccount, writeJsonAtomic } from '../src/config.js';
 import { mapGoogleError, SCOPES } from '../src/gmail/client.js';
-import { authUrl, missingScopes, pkce } from '../src/oauth.js';
+import { authUrl, missingScopes, parseCallback, pkce } from '../src/oauth.js';
 import { createHash } from 'node:crypto';
 
 const SECRET = '1//refresh-token-secret';
@@ -72,4 +72,15 @@ test('Google errors map invalid_grant to re-auth instructions', () => {
   assert.match(grant.message, /pnpm auth:google --account work/);
   const other = mapGoogleError(Object.assign(new Error('Requested entity was not found.'), { status: 404 }), 'work');
   assert.equal(other.message, 'Gmail API error for account "work" (404): Requested entity was not found.');
+});
+
+test('parseCallback accepts pasted loopback redirects only with the right state', () => {
+  const ok = 'http://127.0.0.1:41234/?state=st&code=4%2F0Abc&scope=x';
+  assert.equal(parseCallback(`  ${ok}\n`, 'st'), '4/0Abc');
+  assert.equal(parseCallback('http://localhost:1/?state=st&code=c', 'st'), 'c');
+  assert.throws(() => parseCallback('http://127.0.0.1:1/?state=other&code=c', 'st'), /state mismatch/);
+  assert.throws(() => parseCallback('http://127.0.0.1:1/?state=st&error=access_denied', 'st'), /access_denied/);
+  assert.throws(() => parseCallback('http://127.0.0.1:1/?state=st', 'st'), /No authorisation code/);
+  assert.throws(() => parseCallback('https://evil.example/?state=st&code=c', 'st'), /127\.0\.0\.1/);
+  assert.throws(() => parseCallback('not a url', 'st'), /not a URL/);
 });
