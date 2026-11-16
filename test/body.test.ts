@@ -18,16 +18,16 @@ test('prefers text/plain inside multipart/alternative and lists attachments', ()
     mimeType: 'multipart/mixed',
     parts: [
       { mimeType: 'multipart/alternative', parts: [part('text/plain', 'Plain body'), part('text/html', '<p>HTML body</p>')] },
-      { mimeType: 'application/pdf', filename: 'invoice.pdf', headers: [{ name: 'Content-Disposition', value: 'attachment; filename="invoice.pdf"' }], body: { attachmentId: 'att1', size: 12345 } },
-      { mimeType: 'text/plain', filename: 'notes.txt', headers: [{ name: 'Content-Disposition', value: 'attachment' }], body: { attachmentId: 'att2', size: 10 } },
+      { partId: '1', mimeType: 'application/pdf', filename: 'invoice.pdf', headers: [{ name: 'Content-Disposition', value: 'attachment; filename="invoice.pdf"' }], body: { attachmentId: 'att1', size: 12345 } },
+      { partId: '2', mimeType: 'text/plain', filename: 'notes.txt', headers: [{ name: 'Content-Disposition', value: 'attachment' }], body: { attachmentId: 'att2', size: 10 } },
     ],
   };
   const body = extractBody(payload, 1000);
   assert.equal(body.text, 'Plain body');
   assert.equal(body.format, 'plain');
   assert.deepEqual(body.attachments, [
-    { filename: 'invoice.pdf', mimeType: 'application/pdf', size: 12345 },
-    { filename: 'notes.txt', mimeType: 'text/plain', size: 10 },
+    { partId: '1', filename: 'invoice.pdf', mimeType: 'application/pdf', size: 12345 },
+    { partId: '2', filename: 'notes.txt', mimeType: 'text/plain', size: 10 },
   ]);
 });
 
@@ -126,4 +126,13 @@ test('extractBody strips quotes from text and converted HTML', () => {
   assert.deepEqual([plain.text, plain.quoteStripped], ['New', true]);
   const html = extractBody(part('text/html', '<p>New</p><p>On Tue, 4 Nov 2026, Bob &lt;bob@example.com&gt; wrote:</p><p>&gt; old</p>'), 1000);
   assert.deepEqual([html.text, html.quoteStripped], ['New', true]);
+});
+
+test('attachment types: Gmail octet-stream falls back to the extension', async () => {
+  const { effectiveMimeType, attachmentKind } = await import('../src/gmail/attachments.js');
+  assert.equal(effectiveMimeType('report.PDF', 'application/octet-stream'), 'application/pdf');
+  assert.equal(effectiveMimeType('x.bin', 'application/octet-stream'), 'application/octet-stream');
+  assert.equal(effectiveMimeType('x.txt', 'Text/Plain; charset=utf-8'), 'text/plain');
+  assert.deepEqual(['text/csv', 'application/json', 'message/rfc822', 'image/png', 'image/svg+xml', 'application/pdf'].map(attachmentKind),
+    ['text', 'text', 'text', 'image', 'binary', 'binary']);
 });

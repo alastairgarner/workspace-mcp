@@ -41,11 +41,12 @@ The `account` parameter is an enum of configured names. It's optional when the e
 
 - `list_accounts`: names and emails.
 - `gmail_search(account | "all", query, maxResults, pageToken?)`: Gmail search syntax; `threads.list` then `threads.get` metadata with limited concurrency (~5). Per thread: account, threadId, subject, first and last sender, date, message count, snippet, unread, Gmail web link. `pageToken` only for a single account.
-- `gmail_get_thread(account, threadId, maxCharsPerMessage)`: per message: id, date, from, to, cc, subject, attachment names and sizes, plain-text body.
+- `gmail_get_thread(account, threadId, maxCharsPerMessage)`: per message: id, date, from, to, cc, subject, attachment part IDs, names, types and sizes, plain-text body.
   - Prefer `text/plain`, else convert HTML to text.
   - Decode using the part's charset.
   - Strip quoted replies (Gmail `gmail_quote`, `blockquote`, "On … wrote:", Outlook headers).
   - Truncate each body; cap the number of messages (latest N, report how many were omitted).
+- `gmail_get_attachment(account, messageId, partId, maxBytes, maxChars)`: added later. Addressed by `partId`, since Gmail's `attachmentId` changes between fetches. Text types as text (charset-decoded, HTML converted, truncated); PNG/JPEG/GIF/WebP as MCP image content; anything else as an embedded base64 resource. Size checked before download (default 5 MiB, max 10 MiB). No PDF/Office parsing, so no new dependencies; `gmail.readonly` covers it.
 - `gmail_list_labels(account)`.
 - `gmail_create_draft(account, to[], cc?, bcc?, subject?, body, replyToMessageId?)`:
   - Build a plain-text RFC 2822 message: RFC 2047 encoding for non-ASCII headers, reject CR/LF (header injection), validate addresses.

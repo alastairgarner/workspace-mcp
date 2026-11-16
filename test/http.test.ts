@@ -9,7 +9,7 @@ import { z } from 'zod';
 import { TokenAuth, hashToken } from '../src/auth.js';
 import { MAX_REQUEST_BYTES, routeAccounts, startHttp } from '../src/http.js';
 import { decodeWords } from '../src/gmail/mime.js';
-import { fixtureAccounts } from './fake-gmail.js';
+import { PDF, PNG, fixtureAccounts } from './fake-gmail.js';
 
 async function fixture(t: TestContext) {
   const fakes = fixtureAccounts();
@@ -47,7 +47,7 @@ test('routes /mcp to all accounts and /mcp/<name> to one', async t => {
   const { connect, call } = await fixture(t);
   const all = await connect('/mcp');
   const tools = (await all.listTools()).tools;
-  assert.deepEqual(tools.map(tool => tool.name).sort(), ['gmail_create_draft', 'gmail_get_thread', 'gmail_list_labels', 'gmail_search', 'list_accounts']);
+  assert.deepEqual(tools.map(tool => tool.name).sort(), ['gmail_create_draft', 'gmail_get_attachment', 'gmail_get_thread', 'gmail_list_labels', 'gmail_search', 'list_accounts']);
   for (const tool of tools) assert.ok(!/send/i.test(tool.name));
   const getThread = toolSchema.parse(tools.find(tool => tool.name === 'gmail_get_thread'));
   assert.deepEqual(getThread.inputSchema.properties.account?.enum, ['personal', 'work']);
@@ -87,7 +87,7 @@ test('gmail_search merges accounts newest first and pages a single account', asy
   const all = await call(client, 'gmail_search', { account: 'all', query: 'in:inbox', maxResults: 10 });
   const threads = z.array(z.object({ account: z.string(), threadId: z.string(), subject: z.string(), firstFrom: z.string(), lastFrom: z.string(), date: z.string(), messageCount: z.number(), unread: z.boolean(), link: z.string(), snippet: z.string() }))
     .parse(all.data?.threads);
-  assert.deepEqual(threads.map(thread => thread.threadId), ['w1', 't1', 't2']);
+  assert.deepEqual(threads.map(thread => thread.threadId), ['w1', 't1', 't2', 't3']);
   const t1 = threads[1]!;
   assert.deepEqual([t1.subject, t1.firstFrom, t1.lastFrom, t1.messageCount, t1.unread], ['Lunch?', 'Alice <alice@example.com>', 'Me <me@example.com>', 2, true]);
   assert.equal(t1.link, 'https://mail.google.com/mail/?authuser=me%40example.com#all/t1');
@@ -161,7 +161,7 @@ test('a revoked refresh token tells the user how to re-authorise', async t => {
   assert.match(failed.text, /accounts\.json/);
   // Searching all accounts still returns the healthy ones, plus the error.
   const all = await call(client, 'gmail_search', { account: 'all', query: 'x' });
-  assert.deepEqual((all.data?.threads as { account: string }[]).map(thread => thread.account), ['personal', 'personal']);
+  assert.deepEqual((all.data?.threads as { account: string }[]).map(thread => thread.account), ['personal', 'personal', 'personal']);
   assert.match(JSON.stringify(all.data?.errors), /auth:google --account work/);
 });
 
@@ -205,4 +205,42 @@ test('authenticated HTTP enforces Host/Origin, unknown accounts, methods and siz
   const headers = { ...authorization, 'content-type': 'application/json', accept: 'application/json, text/event-stream' };
   assert.equal((await fetch(endpoint + '/mcp', { method: 'POST', headers, body: '{' })).status, 400);
   assert.equal((await fetch(endpoint + '/mcp', { method: 'POST', headers, body: ' '.repeat(MAX_REQUEST_BYTES + 1) })).status, 413);
+});
+
+test('gmail_get_attachment returns text, images and files, and refuses oversized ones', async t => {
+  const { connect, call, personal, logs } = await fixture(t);
+  const client = await connect('/mcp/personal');
+  const thread = await call(client, 'gmail_get_thread', { threadId: 't3' });
+  const [message] = z.array(z.object({ id: z.string(), body: z.string(), attachments: z.array(z.object({ partId: z.string(), filename: z.string() })) })).parse(thread.data?.messages);
+  assert.equal(message?.body, 'Attached');
+  assert.deepEqual(message?.attachments.map(a => [a.partId, a.filename]), [['1', 'statement.pdf'], ['2', 'chart.png'], ['3', 'data.csv'], ['4', 'page.html'], ['5', 'huge.zip']]);
+
+  const get = (partId: string, extra: Record<string, unknown> = {}) => client.callTool({ name: 'gmail_get_attachment', arguments: { messageId: 'p4', partId, ...extra } });
+  const content = z.array(z.record(z.string(), z.unknown()));
+
+  const csv = await get('3');
+  assert.ok(!csv.isError, JSON.stringify(csv));
+  assert.deepEqual(csv.structuredContent, { account: 'personal', messageId: 'p4', partId: '3', filename: 'data.csv', mimeType: 'text/csv', size: 10, kind: 'text', truncated: false });
+  assert.deepEqual(content.parse(csv.content)[1], { type: 'text', text: 'name\nCafé\n' });
+  assert.deepEqual(content.parse((await get('4')).content)[1], { type: 'text', text: 'Hello there' });
+  assert.equal((await get('3', { maxChars: 100 })).isError, undefined);
+
+  const png = content.parse((await get('2')).content);
+  assert.deepEqual(png[1], { type: 'image', data: PNG.toString('base64'), mimeType: 'image/png' });
+
+  const pdf = await get('1');
+  assert.equal((pdf.structuredContent as { mimeType: string }).mimeType, 'application/pdf');
+  assert.deepEqual(content.parse(pdf.content)[1], { type: 'resource', resource: {
+    uri: 'gmail://personal/messages/p4/parts/1/statement.pdf', mimeType: 'application/pdf', blob: PDF.toString('base64'),
+  } });
+
+  const huge = await get('5');
+  assert.equal(huge.isError, true);
+  assert.match(JSON.stringify(huge.content), /over the 5242880-byte limit/);
+  assert.ok(!personal.calls.includes('attachment:p4:att-big'), 'oversized attachments are refused before download');
+  assert.equal((await get('1', { maxBytes: 5 })).isError, true);
+  assert.equal((await get('9')).isError, true);
+  assert.equal((await get('0.1/../x')).isError, true);
+  assert.equal((await get('')).isError, true);
+  assert.ok(logs.every(line => !/statement\.pdf|Café/.test(line)));
 });

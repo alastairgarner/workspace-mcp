@@ -12,6 +12,28 @@ export function message(id: string, threadId: string, opts: { from: string; to?:
   return { id, threadId, internalDate: String(opts.date), snippet: opts.body.slice(0, 50), labelIds: opts.unread ? ['INBOX', 'UNREAD'] : ['INBOX'], payload };
 }
 
+export const PDF = Buffer.from('%PDF-1.4\n%fake\n');
+export const PNG = Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex');
+const CSV = Buffer.from([0x6e, 0x61, 0x6d, 0x65, 0x0a, 0x43, 0x61, 0x66, 0xe9, 0x0a]); // "name\nCafé\n" in Latin-1
+
+// Wrap a plain message as multipart/mixed with assorted attachments, numbered like Gmail's partIds.
+function withAttachments(original: Message): Message {
+  const body = { ...original.payload!, partId: '0' };
+  const file = (partId: string, filename: string, mimeType: string, content: Partial<NonNullable<Part['body']>>, contentType = mimeType): Part => ({
+    partId, filename, mimeType,
+    headers: [{ name: 'Content-Type', value: contentType }, { name: 'Content-Disposition', value: `attachment; filename="${filename}"` }],
+    body: content,
+  });
+  return { ...original, payload: { partId: '', mimeType: 'multipart/mixed', headers: original.payload!.headers ?? null, parts: [
+    body,
+    file('1', 'statement.pdf', 'application/octet-stream', { attachmentId: 'att-pdf', size: PDF.length }),
+    file('2', 'chart.png', 'image/png', { attachmentId: 'att-png', size: PNG.length }),
+    file('3', 'data.csv', 'text/csv', { data: CSV.toString('base64url'), size: CSV.length }, 'text/csv; charset=iso-8859-1'),
+    file('4', 'page.html', 'text/html', { data: Buffer.from('<p>Hello <b>there</b></p>').toString('base64url'), size: 26 }),
+    file('5', 'huge.zip', 'application/zip', { attachmentId: 'att-big', size: 30 * 1024 * 1024 }),
+  ] } };
+}
+
 export class FakeGmail implements GmailClient {
   drafts: { raw: string; threadId?: string | undefined }[] = [];
   calls: string[] = [];
@@ -46,6 +68,18 @@ export class FakeGmail implements GmailClient {
     return found;
   }
 
+  async getFullMessage(id: string) {
+    return this.getMessage(id);
+  }
+
+  attachments = new Map<string, Buffer>();
+  async getAttachment(messageId: string, attachmentId: string) {
+    this.check(`attachment:${messageId}:${attachmentId}`);
+    const bytes = this.attachments.get(attachmentId);
+    if (!bytes) throw new Error('Requested entity was not found.');
+    return bytes.toString('base64url');
+  }
+
   async listLabels() {
     this.check('labels');
     return [{ id: 'Label_1', name: 'Receipts', type: 'user' }, { id: 'INBOX', name: 'INBOX', type: 'system' }];
@@ -67,6 +101,10 @@ export function fixtureAccounts() {
     ] },
     { id: 't2', messages: [message('p3', 't2', { from: 'Shop <shop@example.com>', subject: 'Receipt', date: Date.UTC(2026, 9, 1), body: 'Thanks' })] },
   ]);
+  personal.threads.push({ id: 't3', messages: [withAttachments(message('p4', 't3', { from: 'Bank <bank@example.com>', subject: 'Statement', date: Date.UTC(2026, 8, 1), body: 'Attached' }))] });
+  personal.attachments.set('att-pdf', PDF);
+  personal.attachments.set('att-png', PNG);
+  personal.attachments.set('att-big', Buffer.alloc(10));
   const work = new FakeGmail('work', [
     { id: 'w1', messages: [message('w1m', 'w1', { from: 'Boss <boss@corp.example>', subject: 'Report', date: Date.UTC(2026, 10, 3), body: 'Send the report' })] },
   ]);

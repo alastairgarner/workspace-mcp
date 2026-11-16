@@ -4,6 +4,7 @@ import { decodeWords } from './mime.js';
 
 // Structural subset of gmail_v1.Schema$MessagePart, so fixtures need no Google types.
 export type Part = {
+  partId?: string | null;
   mimeType?: string | null;
   filename?: string | null;
   headers?: { name?: string | null; value?: string | null }[] | null;
@@ -42,7 +43,7 @@ function isAttachment(part: Part): boolean {
   return !!part.filename || /^\s*attachment/i.test(disposition) || !!part.body?.attachmentId;
 }
 
-export type Attachment = { filename: string; mimeType: string; size: number };
+export type Attachment = { partId: string; filename: string; mimeType: string; size: number };
 
 export function collect(payload: Part | undefined): { plain?: Part; html?: Part; attachments: Attachment[] } {
   const found: { plain?: Part; html?: Part; attachments: Attachment[] } = { attachments: [] };
@@ -53,7 +54,7 @@ export function collect(payload: Part | undefined): { plain?: Part; html?: Part;
       return;
     }
     if (isAttachment(part)) {
-      found.attachments.push({ filename: part.filename || '(unnamed)', mimeType: part.mimeType ?? 'application/octet-stream', size: part.body?.size ?? 0 });
+      found.attachments.push({ partId: part.partId ?? '', filename: part.filename || '(unnamed)', mimeType: part.mimeType ?? 'application/octet-stream', size: part.body?.size ?? 0 });
       return;
     }
     // The first inline text part of each kind is the body; later ones are usually signatures or footers.

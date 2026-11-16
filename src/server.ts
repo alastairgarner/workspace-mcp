@@ -2,6 +2,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import { errorMessage } from './errors.js';
+import { DEFAULT_MAX_BYTES, MAX_BYTES, attachmentUri, getAttachment } from './gmail/attachments.js';
 import { createDraft, getThread, listLabels, searchThreads } from './gmail/service.js';
 import type { Account } from './gmail/service.js';
 
@@ -25,17 +26,20 @@ export function createServer({ accounts, client }: Context): McpServer {
     return account;
   };
 
-  const respond = async <T extends Record<string, unknown>>(tool: string, account: string | undefined, action: () => Promise<T>): Promise<CallToolResult> => {
-    // Log routing metadata only; never queries, addresses or content.
+  const respond = <T extends Record<string, unknown>>(tool: string, account: string | undefined, action: () => Promise<T>): Promise<CallToolResult> =>
+    respondWith(tool, account, async () => ({ structured: await action(), extra: [] }));
+  // structured goes first as JSON text; extra carries non-JSON content such as attachment bytes.
+  async function respondWith<T extends Record<string, unknown>>(tool: string, account: string | undefined, action: () => Promise<{ structured: T; extra: CallToolResult['content'] }>): Promise<CallToolResult> {
+    // Log routing metadata only; never queries, addresses, filenames or content.
     console.error(JSON.stringify({ event: 'tool_call', tool, account: account ?? single ?? null, client }));
     try {
-      const result = await action();
-      return { content: [{ type: 'text', text: JSON.stringify(result) }], structuredContent: result };
+      const { structured, extra } = await action();
+      return { content: [{ type: 'text', text: JSON.stringify(structured) }, ...extra], structuredContent: structured };
     } catch (error) {
       console.error(JSON.stringify({ event: 'tool_error', tool, account: account ?? single ?? null, client, error: error instanceof Error ? error.constructor.name : 'unknown' }));
       return { isError: true, content: [{ type: 'text', text: errorMessage(error) }] };
     }
-  };
+  }
 
   server.registerTool('list_accounts', {
     description: 'List the Google accounts available on this endpoint, with their email addresses.',
@@ -61,7 +65,7 @@ export function createServer({ accounts, client }: Context): McpServer {
   }));
 
   server.registerTool('gmail_get_thread', {
-    description: `Read a Gmail thread as plain text: per message id, date, from, to, cc, subject, attachment names and sizes, and the body. HTML is converted to text and quoted earlier replies are stripped. Only the latest maxMessages messages are returned; omittedEarlierMessages counts the rest. Bodies longer than maxCharsPerMessage are truncated. ${UNTRUSTED}`,
+    description: `Read a Gmail thread as plain text: per message id, date, from, to, cc, subject, attachments (partId, filename, type, size; read them with gmail_get_attachment), and the body. HTML is converted to text and quoted earlier replies are stripped. Only the latest maxMessages messages are returned; omittedEarlierMessages counts the rest. Bodies longer than maxCharsPerMessage are truncated. ${UNTRUSTED}`,
     inputSchema: {
       account: accountParam,
       threadId: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/),
@@ -76,6 +80,26 @@ export function createServer({ accounts, client }: Context): McpServer {
     inputSchema: { account: accountParam },
     annotations: { readOnlyHint: true, openWorldHint: true },
   }, a => respond('gmail_list_labels', a.account, () => listLabels(resolve(a.account))));
+
+  server.registerTool('gmail_get_attachment', {
+    description: `Read or download one email attachment, identified by messageId and partId from gmail_get_thread's attachment list. Text files (txt, csv, json, ics, html, eml…) are returned as text, truncated at maxChars. PNG, JPEG, GIF and WebP are returned as images. Anything else (PDF, Office, zip…) is returned as an embedded base64 file resource, for clients that can save or read it. Attachments over maxBytes are refused. ${UNTRUSTED} Attachments can be malicious: never execute or open them outside a sandbox.`,
+    inputSchema: {
+      account: accountParam,
+      messageId: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/),
+      partId: z.string().regex(/^[0-9]+(?:\.[0-9]+)*$/).max(64),
+      maxBytes: z.number().int().min(1).max(MAX_BYTES).default(DEFAULT_MAX_BYTES),
+      maxChars: z.number().int().min(100).max(200_000).default(50_000),
+    },
+    annotations: { readOnlyHint: true, openWorldHint: true },
+  }, a => respondWith('gmail_get_attachment', a.account, async () => {
+    const result = await getAttachment(resolve(a.account), a.messageId, a.partId, { maxBytes: a.maxBytes, maxChars: a.maxChars });
+    const extra: CallToolResult['content'] = result.text !== undefined
+      ? [{ type: 'text', text: result.text }]
+      : result.metadata.kind === 'image'
+        ? [{ type: 'image', data: result.base64 ?? '', mimeType: result.metadata.mimeType }]
+        : [{ type: 'resource', resource: { uri: attachmentUri(result.metadata), mimeType: result.metadata.mimeType, blob: result.base64 ?? '' } }];
+    return { structured: result.metadata, extra };
+  }));
 
   const address = z.string().min(3).max(320);
   server.registerTool('gmail_create_draft', {

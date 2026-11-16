@@ -14,6 +14,9 @@ export interface GmailClient {
   listThreads(params: { q: string; maxResults: number; pageToken?: string | undefined }): Promise<{ threads: { id: string }[]; nextPageToken?: string | undefined; resultSizeEstimate?: number | undefined }>;
   getThread(id: string, format: 'metadata' | 'full', metadataHeaders?: string[]): Promise<Thread>;
   getMessage(id: string, metadataHeaders: string[]): Promise<Message>;
+  getFullMessage(id: string): Promise<Message>;
+  /** Base64url attachment bytes. */
+  getAttachment(messageId: string, attachmentId: string): Promise<string>;
   listLabels(): Promise<Label[]>;
   createDraft(raw: string, threadId?: string): Promise<{ id: string; messageId?: string | undefined; threadId?: string | undefined }>;
 }
@@ -57,6 +60,13 @@ export function googleGmail(client: OAuthClient, account: AccountConfig): GmailC
       (await api.users.threads.get({ userId: 'me', id, format, ...(metadataHeaders ? { metadataHeaders } : {}) })).data),
     getMessage: (id, metadataHeaders) => wrap(async () =>
       (await api.users.messages.get({ userId: 'me', id, format: 'metadata', metadataHeaders })).data),
+    getFullMessage: id => wrap(async () =>
+      (await api.users.messages.get({ userId: 'me', id, format: 'full' })).data),
+    getAttachment: (messageId, id) => wrap(async () => {
+      const { data } = await api.users.messages.attachments.get({ userId: 'me', messageId, id });
+      if (!data.data) throw new Error('Gmail returned no attachment data');
+      return data.data;
+    }),
     listLabels: () => wrap(async () => (await api.users.labels.list({ userId: 'me' })).data.labels ?? []),
     createDraft: (raw, threadId) => wrap(async () => {
       const { data } = await api.users.drafts.create({ userId: 'me', requestBody: { message: { raw, ...(threadId ? { threadId } : {}) } } });

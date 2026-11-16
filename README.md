@@ -10,7 +10,8 @@ No tool sends, deletes, archives or relabels mail. Drafts appear in Gmail for yo
 | --- | --- |
 | `list_accounts` | Account names and emails on this endpoint. |
 | `gmail_search` | Gmail search syntax over one account or `"all"`; per thread: subject, first/last sender, date, count, snippet, unread, web link. `pageToken` for a single account only. |
-| `gmail_get_thread` | Plain-text messages (HTML converted, charset-decoded, quoted replies stripped, bodies truncated, latest `maxMessages` only) plus attachment names and sizes. |
+| `gmail_get_thread` | Plain-text messages (HTML converted, charset-decoded, quoted replies stripped, bodies truncated, latest `maxMessages` only) plus attachment part IDs, names, types and sizes. |
+| `gmail_get_attachment` | One attachment by `messageId` + `partId` (from `gmail_get_thread`). Text types as text, PNG/JPEG/GIF/WebP as images, anything else (PDF, Office, zip) as an embedded base64 file. Refused over `maxBytes` (default 5 MiB, max 10 MiB). No PDF text extraction. |
 | `gmail_list_labels` | Label IDs, names and types. |
 | `gmail_create_draft` | Plain-text draft. With `replyToMessageId` it joins the thread and defaults `to` and `Re:` subject. Returns the draft ID and a Gmail link. |
 
@@ -30,7 +31,7 @@ pnpm test          # tsc build + node:test; never calls Google
 docker build -t workspace-mcp:local .   # runs the tests inside the build
 ```
 
-Layout: `src/http-main.ts` (entrypoint, env), `src/http.ts` (auth, routing), `src/server.ts` (tools), `src/gmail/` (`client.ts` Google API adapter, `service.ts` tool logic, `mime.ts` draft building, `body.ts` / `html.ts` / `quotes.ts` body extraction), `src/config.ts`, `src/login.ts` + `src/oauth.ts` (Google login), `src/auth.ts` + `src/token-hash.ts` (bearer tokens, from Vault).
+Layout: `src/http-main.ts` (entrypoint, env), `src/http.ts` (auth, routing), `src/server.ts` (tools), `src/gmail/` (`client.ts` Google API adapter, `service.ts` tool logic, `mime.ts` draft building, `body.ts` / `html.ts` / `quotes.ts` body extraction, `attachments.ts`), `src/config.ts`, `src/login.ts` + `src/oauth.ts` (Google login), `src/auth.ts` + `src/token-hash.ts` (bearer tokens, from Vault).
 
 ## Setup
 
