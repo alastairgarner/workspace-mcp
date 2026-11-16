@@ -1,0 +1,31 @@
+# Local testing only. On the Pi, home-server/workspace/docker-compose.yml runs this behind Traefik.
+services:
+  workspace:
+    build: .
+    image: workspace-mcp:local
+    init: true
+    environment:
+      CONFIG_DIR: /config
+      HTTP_ALLOWED_HOSTS: localhost,127.0.0.1,[::1]
+      NODE_OPTIONS: --max-old-space-size=256
+    ports:
+      - "127.0.0.1:8182:3000"
+    volumes:
+      - type: bind
+        source: ./.local/config
+        target: /config
+        read_only: true
+        bind:
+          create_host_path: false
+    read_only: true
+    mem_limit: 384m
+    memswap_limit: 384m
+    cpus: 1.0
+    pids_limit: 64
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 30s
